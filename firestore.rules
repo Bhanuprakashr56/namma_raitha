@@ -1,0 +1,133 @@
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return request.auth.uid == userId;
+    }
+
+    function isApprovedSeller() {
+      // It's safer to read the role from the database rather than a custom token,
+      // unless you have a robust system for minting tokens.
+      return request.auth.uid != null && get(/databases/$(database)/documents/sellers/$(request.auth.uid)).data.status == 'approved';
+    }
+
+    function isAdmin() {
+      return request.auth.token.role == 'admin';
+    }
+
+    // Users collection (Farmers and Companies)
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update: if isOwner(userId);
+      allow delete: if isOwner(userId);
+    }
+    
+    // Sellers collection
+    match /sellers/{sellerId} {
+      // Allow unauthenticated creation for registration
+      allow create: if request.auth == null;
+      // Owner or admin can read. Users who are logged in can read for profile lookups.
+      allow read: if isSignedIn();
+      // Only the owner can update their own profile for corrections.
+      // Admin can update for approval/rejection.
+      allow update: if isOwner(sellerId) || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // Vendor Inventory collection
+    match /vendor_inventory/{productId} {
+      allow read: if isSignedIn();
+      // Only an approved seller can add, update, or delete their own products
+      allow create, update, delete: if isApprovedSeller() && request.resource.data.sellerId == request.auth.uid;
+    }
+    
+    // Forum Posts collection
+    match /forumPosts/{postId} {
+      allow list, get: if isSignedIn();
+      allow create: if isSignedIn() && request.resource.data.authorId == request.auth.uid;
+      allow update: if isSignedIn() && (
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes'])) ||
+        (isOwner(resource.data.authorId))
+      );
+      allow delete: if isSignedIn() && isOwner(resource.data.authorId);
+      
+      match /comments/{commentId} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn() && request.resource.data.authorId == request.auth.uid;
+        allow update, delete: if isSignedIn() && isOwner(resource.data.authorId);
+      }
+    }
+    
+    // Marketplace Listings collection (for farmers)
+    match /listings/{listingId} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn();
+        allow update, delete: if isSignedIn() && isOwner(resource.data.sellerId);
+    }
+    
+    // Chat Sessions collection
+    match /chatSessions/{chatId} {
+      allow read, write: if isSignedIn() && request.auth.uid in resource.data.participants;
+
+      match /messages/{messageId} {
+        allow read, write: if isSignedIn() && request.auth.uid in get(/databases/$(database)/documents/chatSessions/$(chatId)).data.participants;
+      }
+    }
+    
+    // Contracts collection
+    match /contracts/{contractId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isOwner(request.resource.data.companyId);
+      allow update: if isSignedIn() && (
+        (resource.data.status == 'Open' && request.resource.data.status == 'Active') ||
+        (isOwner(resource.data.companyId) || isOwner(resource.data.farmerId))
+      );
+      allow delete: if isSignedIn() && isOwner(resource.data.companyId) && resource.data.status == 'Open';
+
+      match /farmerUpdates/{updateId} {
+        allow read: if isSignedIn() && (isOwner(get(/databases/$(database)/documents/contracts/$(contractId)).data.companyId) || isOwner(get(/databases/$(database)/documents/contracts/$(contractId)).data.farmerId));
+        allow create: if isSignedIn() && isOwner(get(/databases/$(database)/documents/contracts/$(contractId)).data.farmerId);
+      }
+      
+      match /companyGuidelines/{guidelineId} {
+         allow read: if isSignedIn() && (isOwner(get(/databases/$(database)/documents/contracts/$(contractId)).data.companyId) || isOwner(get(/databases/$(database)/documents/contracts/$(contractId)).data.farmerId));
+         allow create: if isSignedIn() && isOwner(get(/databases/$(database)/documents/contracts/$(contractId)).data.companyId);
+      }
+    }
+    
+    // Notifications collection
+    match /notifications/{notificationId} {
+      allow read, update: if isSignedIn() && isOwner(resource.data.userId);
+      allow create, delete: if false; // Only server can create/delete
+    }
+
+    // Orders collection
+    match /orders/{orderId} {
+      // Allow a user to create an order if the order's userId matches their own UID
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      
+      // Allow a user to read their own order document OR an approved seller to read an order containing their product
+      allow read: if isSignedIn() && (
+        isOwner(resource.data.userId) || 
+        (isApprovedSeller() && request.auth.uid in resource.data.sellerIds)
+      );
+
+      // Allow a user to list/query their own orders.
+      // Allow a seller to query for orders containing their products.
+      allow list: if isSignedIn() && 
+        (
+          (request.query.limit == 1 || request.query.where[0][2] == request.auth.uid) ||
+          (isApprovedSeller() && request.query.where[0][2] == request.auth.uid)
+        );
+    }
+  }
+}

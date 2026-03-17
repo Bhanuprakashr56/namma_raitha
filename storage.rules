@@ -1,0 +1,35 @@
+
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Rule for Farmer Contract Photos
+    match /contract_photos/{contractId}/{fileName} {
+      allow read: if request.auth != null; // Allow authenticated users to read photos
+      allow write: if request.auth != null; // Allow authenticated users to write photos
+    }
+
+    // Rule for Seller Licenses during registration (unauthenticated)
+    match /licenses/pending/{fileName} {
+        // Allow anyone to create a file here. This is for pre-registration.
+        // We make this path unpredictable with a UUID to prevent abuse.
+        allow create: if true;
+
+        // Disallow reading, updating, or deleting by anyone.
+        allow read, update, delete: if false;
+    }
+
+    // Rule for accessing licenses after registration by an Admin.
+    // This assumes an Admin would use the Admin SDK which bypasses these rules.
+    // To allow client-side admin access (not recommended), you'd add:
+    // allow read: if get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    match /licenses/{userId}/{fileName} {
+        allow read, write: if false; 
+    }
+
+    // Default deny all other paths
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
